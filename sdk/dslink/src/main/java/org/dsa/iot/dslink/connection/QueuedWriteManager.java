@@ -2,14 +2,16 @@ package org.dsa.iot.dslink.connection;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import io.netty.util.internal.SystemPropertyUtil;
+import java.io.File;
+import java.io.FileReader;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
-import org.dsa.iot.dslink.connection.connector.WebSocketConnector;
 import org.dsa.iot.dslink.provider.LoopProvider;
 import org.dsa.iot.dslink.util.PropertyReference;
 import org.dsa.iot.dslink.util.json.EncodingFormat;
@@ -38,6 +40,7 @@ public class QueuedWriteManager implements Runnable {
     private ScheduledFuture<?> fut;
     private final Object writeMutex = new Object();
     private long queueStarted = -1;
+    private boolean watchdogEnabled = false;
 
     public QueuedWriteManager(NetworkClient client,
                               MessageTracker tracker,
@@ -56,6 +59,23 @@ public class QueuedWriteManager implements Runnable {
         this.tracker = tracker;
         this.topName = topName;
         this.client = client;
+        try {
+            File f = new File("dslink.properties");
+            if (f.exists()) {
+                Properties p = new Properties();
+                FileReader reader = new FileReader(f);
+                p.load(reader);
+                watchdogEnabled = p.getProperty(
+                        "enableWriteQueueWatchdog","false").equals("true");
+                if (watchdogEnabled) {
+                    LOGGER.warn("Write Queue Watchdog is ENABLED");
+                }
+                reader.close();
+                p.clear();
+            }
+        } catch (Exception x) {
+            LOGGER.warn("Not important", x);
+        }
     }
 
     public synchronized void close() {
@@ -190,12 +210,16 @@ public class QueuedWriteManager implements Runnable {
                     if (duration > MAX_QUEUE_DURATION) {
                         if (client instanceof NetworkHandlers) { //should always be true
                             //Broker is lost, we've been queuing too long.
-                            LOGGER.error("Outgoing queue duration exceeded: " + duration);
-                            client.close();
-                            NetworkHandlers con = (NetworkHandlers) client;
-                            //The following trick is the only way I could find to force the
-                            //connection manager to reconnect.
-                            con.getOnDisconnected().handle(null);
+                            if (watchdogEnabled) {
+                                System.exit(1);
+                            } else {
+                                LOGGER.error("Outgoing queue duration exceeded: " + duration);
+                                client.close();
+                                NetworkHandlers con = (NetworkHandlers) client;
+                                //The following trick is the only way I could find to force the
+                                //connection manager to reconnect.
+                                con.getOnDisconnected().handle(null);
+                            }
                         }
                     }
                 }
